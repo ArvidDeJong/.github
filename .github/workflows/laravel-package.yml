@@ -1,0 +1,100 @@
+# Reusable CI for every darvis/* Laravel package.
+#
+# A package calls it from its own .github/workflows/tests.yml:
+#
+#   jobs:
+#     tests:
+#       uses: ArvidDeJong/.github/.github/workflows/laravel-package.yml@main
+#       secrets: inherit
+#
+# Change the PHP and Laravel matrix here, not in the packages.
+
+name: Laravel package
+
+on:
+  workflow_call:
+    inputs:
+      flux-pro:
+        description: Authenticate against composer.fluxui.dev (needs FLUX_USERNAME and FLUX_LICENSE_KEY secrets)
+        type: boolean
+        default: false
+      quality:
+        description: Run the Pint and Larastan job (needs the composer lint and analyse scripts)
+        type: boolean
+        default: true
+
+jobs:
+  tests:
+    name: PHP ${{ matrix.php }} · Laravel ${{ matrix.laravel }} · ${{ matrix.stability }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+        laravel: ['11', '12', '13']
+        stability: [prefer-lowest, prefer-stable]
+        include:
+          - laravel: '11'
+            testbench: '9'
+          - laravel: '12'
+            testbench: '10'
+          - laravel: '13'
+            testbench: '11'
+        exclude:
+          # Laravel 13 requires PHP 8.3.
+          - laravel: '13'
+            php: '8.2'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      # Composer blocks releases with a published security advisory. Laravel 11
+      # has no patched release left, and the lowest supported versions of the
+      # newer majors are affected too. This only concerns the test install.
+      - name: Allow versions with security advisories
+        run: composer config policy.advisories.block false
+
+      # livewire/flux-pro is a private package on composer.fluxui.dev.
+      - name: Add Flux Pro license
+        if: inputs.flux-pro
+        run: composer config http-basic.composer.fluxui.dev "${{ secrets.FLUX_USERNAME }}" "${{ secrets.FLUX_LICENSE_KEY }}"
+
+      - name: Install dependencies
+        run: |
+          composer require "laravel/framework:^${{ matrix.laravel }}.0" "orchestra/testbench:^${{ matrix.testbench }}.0" --dev --no-update --no-interaction
+          composer update --${{ matrix.stability }} --prefer-dist --no-interaction --no-progress
+
+      - name: Run tests
+        run: vendor/bin/pest
+
+  quality:
+    name: Pint and Larastan
+    if: inputs.quality
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Add Flux Pro license
+        if: inputs.flux-pro
+        run: composer config http-basic.composer.fluxui.dev "${{ secrets.FLUX_USERNAME }}" "${{ secrets.FLUX_LICENSE_KEY }}"
+
+      - name: Install dependencies
+        run: composer update --prefer-dist --no-interaction --no-progress
+
+      - name: Check code style
+        run: composer lint
+
+      - name: Run static analysis
+        run: composer analyse
